@@ -2,12 +2,24 @@ import json
 import logging
 import os
 
+import streamlit as st
 from dotenv import load_dotenv
 from openai import OpenAI
 
 logger = logging.getLogger(__name__)
 
 load_dotenv()
+
+
+def _get_secret(key: str, default: str = "") -> str:
+    """Read from env var first, fall back to st.secrets."""
+    value = os.getenv(key, "")
+    if not value:
+        try:
+            value = st.secrets.get(key, default)
+        except FileNotFoundError:
+            value = default
+    return value
 
 SYSTEM_PROMPT = """You are an expert senior pair programming partner working with Python code. You don't just review code — you actively collaborate. You understand the developer's intent, spot architectural issues, write tests, and refactor code. You're helpful, specific, and teach as you go.
 
@@ -46,14 +58,14 @@ Important:
 
 class PairEngineer:
     def __init__(self):
-        api_key = os.getenv("DEEPSEEK_API_KEY")
+        api_key = _get_secret("DEEPSEEK_API_KEY")
         if not api_key:
-            raise ValueError("DEEPSEEK_API_KEY not found. Create a .env file with your key.")
+            raise ValueError("DEEPSEEK_API_KEY not found.")
         self.client = OpenAI(
             api_key=api_key,
             base_url="https://api.deepseek.com",
         )
-        self.model = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+        self.model = _get_secret("DEEPSEEK_MODEL", "deepseek-chat")
 
     def _call_api(self, code: str, context: str) -> dict:
         user_message = f"Here is the Python code to pair on:\n\n```python\n{code}\n```"
