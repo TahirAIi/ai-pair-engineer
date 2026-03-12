@@ -97,7 +97,7 @@ if clicked:
         try:
             engineer = _build_engineer()
         except Exception as e:
-            logger.error("API key is not configured. Please set up your .env file.")
+            logger.error(e)
             st.error("Something went wrong. Please try again later.")
             st.stop()
 
