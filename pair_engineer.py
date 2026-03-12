@@ -1,27 +1,36 @@
 import json
 import logging
-import os
+import time
+from dataclasses import dataclass
 
-import streamlit as st
-from dotenv import load_dotenv
-from openai import OpenAI
+from adapters import LLMAdapter
+from exceptions import AnalysisError, CapacityError
+
+__all__ = ["PairEngineer", "AnalysisResult"]
 
 logger = logging.getLogger(__name__)
 
-load_dotenv()
+
+@dataclass(frozen=True)
+class AnalysisResult:
+    design_analysis: str
+    generated_tests: str
+    refactored_code: str
+    score: int
+    pair_notes: str
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "AnalysisResult":
+        return cls(
+            design_analysis=data.get("design_analysis", ""),
+            generated_tests=data.get("generated_tests", ""),
+            refactored_code=data.get("refactored_code", ""),
+            score=data.get("score", 0),
+            pair_notes=data.get("pair_notes", ""),
+        )
 
 
-def _get_secret(key: str, default: str = "") -> str:
-    """Read from env var first, fall back to st.secrets."""
-    value = os.getenv(key, "")
-    if not value:
-        try:
-            value = st.secrets.get(key, default)
-        except FileNotFoundError:
-            value = default
-    return value
-
-SYSTEM_PROMPT = """You are an expert senior pair programming partner working with Python code. You don't just review code — you actively collaborate. You understand the developer's intent, spot architectural issues, write tests, and refactor code. You're helpful, specific, and teach as you go.
+DEFAULT_SYSTEM_PROMPT = """You are an expert senior pair programming partner working with Python code. You don't just review code — you actively collaborate. You understand the developer's intent, spot architectural issues, write tests, and refactor code. You're helpful, specific, and teach as you go.
 
 When given code (and optionally the developer's intent/context), respond with a JSON object containing these keys:
 
@@ -35,7 +44,7 @@ When given code (and optionally the developer's intent/context), respond with a 
 
 Rules for each field:
 
-**design_analysis**: Analyze the code's architecture and design. Identify design pattern issues and SOLID violations. Check for potential bugs due to concurrency or multithreading, missing locks, race conditions, idempotency issues, peroformance issues, N+1 queries, etc. Tag severity as Critical, Warning, or Info. Assess coupling, cohesion, separation of concerns. Check for potential security vulnerabilities. Be specific reference variable names, method names, class names.
+**design_analysis**: Analyze the code's architecture and design. Identify design pattern issues and SOLID violations. Check for potential bugs due to concurrency or multithreading, missing locks, race conditions, idempotency issues, performance issues, N+1 queries, etc. Tag severity as Critical, Warning, or Info. Assess coupling, cohesion, separation of concerns. Check for potential security vulnerabilities. Be specific reference variable names, method names, class names.
 
 **generated_tests**: Write a complete, runnable pytest test suite. Cover happy path, edge cases, and error/boundary cases. Use realistic test data. Include all necessary imports and setup. Make tests copy-paste ready.
 
@@ -56,42 +65,46 @@ Important:
 """
 
 
-class PairEngineer:
-    def __init__(self):
-        api_key = _get_secret("DEEPSEEK_API_KEY")
-        if not api_key:
-            raise ValueError("DEEPSEEK_API_KEY not found.")
-        self.client = OpenAI(
-            api_key=api_key,
-            base_url="https://api.deepseek.com",
-        )
-        self.model = _get_secret("DEEPSEEK_MODEL", "deepseek-chat")
+_MAX_RETRIES = 2
+_RETRY_BACKOFF_SECONDS = 3
 
-    def _call_api(self, code: str, context: str) -> dict:
+
+class PairEngineer:
+    def __init__(
+        self,
+        adapter: LLMAdapter,
+        system_prompt: str = DEFAULT_SYSTEM_PROMPT,
+    ):
+        self.adapter = adapter
+        self.system_prompt = system_prompt
+
+    def _build_user_message(self, code: str, context: str) -> str:
         user_message = f"Here is the Python code to pair on:\n\n```python\n{code}\n```"
         if context.strip():
             user_message += f"\n\nDeveloper's context/intent: {context}"
+        return user_message
 
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_message},
-            ],
-            temperature=0.3,
-            max_tokens=4096,
-            response_format={"type": "json_object"},
-        )
+    def analyze(self, code: str, context: str = "") -> AnalysisResult:
+        if not code.strip():
+            raise ValueError("Code must not be empty.")
 
-        raw = response.choices[0].message.content
-        return json.loads(raw)
+        user_message = self._build_user_message(code, context)
 
-    def analyze(self, code: str, context: str = "") -> dict:
-        for attempt in range(2):
+        last_error: Exception | None = None
+        for attempt in range(_MAX_RETRIES):
             try:
-                return self._call_api(code, context)
-            except Exception as e:
-                logger.error("API call failed (attempt %d): %s", attempt + 1, e)
-                if attempt == 0:
-                    continue
-                raise RuntimeError("capacity") from e
+                raw = self.adapter.generate_response(self.system_prompt, user_message)
+                return AnalysisResult.from_dict(json.loads(raw))
+            except CapacityError as e:
+                logger.error("Provider at capacity (attempt %d): %s", attempt + 1, e)
+                last_error = e
+            except (json.JSONDecodeError, AnalysisError) as e:
+                logger.error("Failed to parse response (attempt %d): %s", attempt + 1, e)
+                last_error = e
+
+            if attempt < _MAX_RETRIES - 1:
+                time.sleep(_RETRY_BACKOFF_SECONDS * (attempt + 1))
+
+        if isinstance(last_error, CapacityError):
+            raise last_error
+        raise AnalysisError("Failed to analyze code") from last_error
