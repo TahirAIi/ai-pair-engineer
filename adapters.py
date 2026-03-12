@@ -1,16 +1,16 @@
 from abc import ABC, abstractmethod
+from collections.abc import Iterator
 
 from exceptions import AnalysisError, CapacityError
-from openai import APIConnectionError, APIError, RateLimitError, OpenAI
+from openai import APIConnectionError, APIError, OpenAI, RateLimitError
 
 
 class LLMAdapter(ABC):
-    """Normalizes any LLM SDK to a common interface.
-    """
+    """Normalizes any LLM SDK to a common streaming interface."""
 
     @abstractmethod
-    def generate_response(self, system_prompt: str, user_message: str) -> str:
-        """Send a prompt via the underlying SDK and return raw response text.
+    def stream(self, system_prompt: str, user_message: str) -> Iterator[str]:
+        """Stream a prompt via the underlying SDK, yielding text chunks.
 
         Raises:
             CapacityError: Rate-limited or at capacity.
@@ -34,8 +34,7 @@ class DeepSeekAdapter(LLMAdapter):
         self.temperature = temperature
         self.max_tokens = max_tokens
 
-    def generate_response(self, system_prompt: str, user_message: str) -> str:
-
+    def stream(self, system_prompt: str, user_message: str) -> Iterator[str]:
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
@@ -45,16 +44,14 @@ class DeepSeekAdapter(LLMAdapter):
                 ],
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,
-                response_format={"type": "json_object"},
+                stream=True,
             )
         except (APIError, APIConnectionError, RateLimitError) as e:
             raise CapacityError("DeepSeek API is at capacity") from e
 
-        if not response.choices:
-            raise AnalysisError("DeepSeek returned an empty response")
-
-        raw = response.choices[0].message.content
-        if not raw:
-            raise AnalysisError("DeepSeek returned empty message content")
-
-        return raw
+        try:
+            for chunk in response:
+                if chunk.choices and chunk.choices[0].delta.content:
+                    yield chunk.choices[0].delta.content
+        except (APIError, APIConnectionError) as e:
+            raise AnalysisError("Stream interrupted") from e

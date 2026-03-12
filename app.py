@@ -88,7 +88,6 @@ context = st.text_input(
 )
 
 clicked = st.button("🔍 Pair Review", type="primary", use_container_width=True)
-spinner_placeholder = st.empty()
 
 if clicked:
     if not code.strip():
@@ -101,32 +100,10 @@ if clicked:
             st.error("Something went wrong. Please try again later.")
             st.stop()
 
-        error_msg = None
-        with spinner_placeholder.container():
-            with st.spinner("🔍 Analyzing your code..."):
-                try:
-                    result = engineer.analyze(code, context)
-                except CapacityError:
-                    error_msg = "Our AI provider is currently experiencing capacity issues. Please try again in a few moments."
-                except AnalysisError as e:
-                    logger.error("Analysis failed: %s", e)
-                    error_msg = "Something went wrong. Please try again later."
-        spinner_placeholder.empty()
-
-        if error_msg:
-            st.error(error_msg)
-            st.stop()
-
-        st.metric("Code Quality Score", f"{result.score} / 10")
-
-        with st.expander("🏗️ Design Analysis", expanded=True):
-            st.markdown(result.design_analysis)
-
-        with st.expander("🧪 Generated Tests", expanded=True):
-            st.markdown(result.generated_tests)
-
-        with st.expander("🔄 Refactored Code", expanded=True):
-            st.markdown(result.refactored_code)
-
-        with st.expander("📝 Pair Engineer Notes", expanded=True):
-            st.markdown(result.pair_notes)
+        try:
+            st.write_stream(engineer.analyze(code, context))
+        except CapacityError:
+            st.error("Our AI provider is currently experiencing capacity issues. Please try again in a few moments.")
+        except AnalysisError as e:
+            logger.error("Analysis failed: %s", e)
+            st.error("Something went wrong. Please try again later.")
