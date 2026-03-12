@@ -84,7 +84,6 @@ if clicked:
         with spinner_placeholder.container():
             with st.spinner("🔍 Analyzing your code..."):
                 try:
-                    raise Exception("test")
                     result = engineer.analyze(code, context)
                 except RuntimeError:
                     error_msg = "Our AI provider is currently experiencing capacity issues. Please try again in a few moments."
